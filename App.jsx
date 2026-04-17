@@ -1,128 +1,195 @@
 import { useMemo, useState } from "react";
 
+const API_BASE = "http://localhost:8000";
+
 export default function App() {
   const [file, setFile] = useState(null);
   const [topics, setTopics] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [uploadId, setUploadId] = useState("");
+
   const [numTopics, setNumTopics] = useState(5);
   const [numWords, setNumWords] = useState(10);
   const [passes, setPasses] = useState(10);
 
-  const canSubmit = useMemo(() => !!file && !isLoading, [file, isLoading]);
+  const isLoading = isUploading || isProcessing;
+  const canUpload = useMemo(() => !!file && !isLoading, [file, isLoading]);
+  const canProcess = useMemo(() => !!uploadId && !isLoading, [uploadId, isLoading]);
+
+  const resetMessages = () => {
+    setError("");
+    setSuccess("");
+  };
 
   const handleFileChange = (event) => {
     const selected = event.target.files?.[0] ?? null;
     setFile(selected);
+    setUploadId("");
     setTopics([]);
-    setError("");
+    resetMessages();
   };
 
-  const handleProcess = async () => {
+  const extractErrorMessage = (payload, fallback) => {
+    if (typeof payload === "string" && payload.trim()) return payload;
+    if (payload && typeof payload.detail === "string") return payload.detail;
+    return fallback;
+  };
+
+  const handleUpload = async () => {
     if (!file) {
-      setError("Silakan pilih file CSV terlebih dahulu.");
+      setError("Pilih file CSV terlebih dahulu.");
       return;
     }
 
-    setIsLoading(true);
-    setError("");
+    resetMessages();
     setTopics([]);
+    setUploadId("");
+    setIsUploading(true);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("num_topics", String(numTopics));
-      formData.append("num_words", String(numWords));
-      formData.append("passes", String(passes));
 
-      const response = await fetch("http://localhost:8000/topic-modeling", {
+      const response = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData,
       });
 
-      const data = await response.json();
-
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data?.detail || "Gagal memproses LDA.");
+        throw new Error(extractErrorMessage(data, "Gagal upload file."));
+      }
+
+      setUploadId(data.upload_id);
+      setSuccess(`Upload berhasil (${data.num_documents} dokumen). Siap diproses.`);
+    } catch (err) {
+      setError(err.message || "Terjadi kesalahan saat upload file.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleProcess = async () => {
+    if (!uploadId) {
+      setError("Upload file dulu sebelum proses LDA.");
+      return;
+    }
+
+    if (numTopics < 1 || numWords < 1 || passes < 1) {
+      setError("numTopics, numWords, dan passes harus minimal 1.");
+      return;
+    }
+
+    resetMessages();
+    setTopics([]);
+    setIsProcessing(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/process`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          upload_id: uploadId,
+          num_topics: numTopics,
+          num_words: numWords,
+          passes,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(data, "Gagal memproses LDA."));
       }
 
       setTopics(data.topics || []);
+      setSuccess(`Proses LDA selesai. ${data.topics?.length || 0} topik ditemukan.`);
     } catch (err) {
-      setError(err.message || "Terjadi kesalahan saat memproses data.");
+      setError(err.message || "Terjadi kesalahan saat proses LDA.");
     } finally {
-      setIsLoading(false);
+      setIsProcessing(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 py-10 px-4">
-      <div className="mx-auto w-full max-w-4xl rounded-2xl bg-white p-6 shadow-md md:p-8">
-        <h1 className="text-2xl font-bold text-slate-800 md:text-3xl">
-          Topic Modeling LDA
-        </h1>
+    <div className="min-h-screen bg-slate-100 px-4 py-10">
+      <div className="mx-auto w-full max-w-5xl rounded-2xl bg-white p-6 shadow-md md:p-8">
+        <h1 className="text-2xl font-bold text-slate-800 md:text-3xl">LDA Topic Modeling</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Upload file CSV, lalu klik tombol proses untuk menampilkan top words tiap topik.
+          1) Upload CSV ke endpoint <code>/upload</code>, 2) proses model via endpoint <code>/process</code>.
         </p>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Jumlah Topik
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={numTopics}
-              onChange={(e) => setNumTopics(Number(e.target.value) || 1)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-0 focus:border-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Top Words / Topik
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={numWords}
-              onChange={(e) => setNumWords(Number(e.target.value) || 1)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-0 focus:border-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Passes
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={passes}
-              onChange={(e) => setPasses(Number(e.target.value) || 1)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-0 focus:border-blue-500"
-            />
-          </div>
-        </div>
-
-        <div className="mt-6 space-y-4">
-          <label className="block">
-            <span className="mb-2 block text-sm font-medium text-slate-700">Upload CSV</span>
+        <div className="mt-6 rounded-xl border border-slate-200 p-4">
+          <h2 className="text-lg font-semibold text-slate-800">Upload File</h2>
+          <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
             <input
               type="file"
               accept=".csv"
               onChange={handleFileChange}
               className="block w-full rounded-lg border border-slate-300 bg-slate-50 p-2 text-sm text-slate-700 file:mr-4 file:rounded-md file:border-0 file:bg-blue-600 file:px-4 file:py-2 file:text-white hover:file:bg-blue-700"
             />
-          </label>
+            <button
+              type="button"
+              onClick={handleUpload}
+              disabled={!canUpload}
+              className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              {isUploading ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+          {uploadId && (
+            <p className="mt-3 text-xs text-slate-500">
+              upload_id: <span className="font-mono">{uploadId}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="mt-6 rounded-xl border border-slate-200 p-4">
+          <h2 className="text-lg font-semibold text-slate-800">Konfigurasi & Proses LDA</h2>
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <label className="text-sm text-slate-700">
+              Jumlah Topik
+              <input
+                type="number"
+                min={1}
+                value={numTopics}
+                onChange={(e) => setNumTopics(Math.max(1, Number(e.target.value) || 1))}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-sm text-slate-700">
+              Top Words / Topik
+              <input
+                type="number"
+                min={1}
+                value={numWords}
+                onChange={(e) => setNumWords(Math.max(1, Number(e.target.value) || 1))}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-sm text-slate-700">
+              Passes
+              <input
+                type="number"
+                min={1}
+                value={passes}
+                onChange={(e) => setPasses(Math.max(1, Number(e.target.value) || 1))}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
 
           <button
             type="button"
             onClick={handleProcess}
-            disabled={!canSubmit}
-            className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            disabled={!canProcess}
+            className="mt-4 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
-            {isLoading ? "Memproses LDA..." : "Proses LDA"}
+            {isProcessing ? "Memproses LDA..." : "Proses LDA"}
           </button>
         </div>
 
@@ -132,18 +199,24 @@ export default function App() {
           </div>
         )}
 
+        {success && (
+          <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+            {success}
+          </div>
+        )}
+
         <section className="mt-8">
           <h2 className="text-lg font-semibold text-slate-800">Hasil Topik</h2>
 
-          {isLoading && (
+          {isProcessing && (
             <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-              Sedang menjalankan pemodelan LDA, mohon tunggu...
+              Sedang memproses model LDA, mohon tunggu...
             </div>
           )}
 
-          {!isLoading && topics.length === 0 && !error && (
+          {!isProcessing && topics.length === 0 && !error && (
             <p className="mt-3 text-sm text-slate-500">
-              Belum ada hasil. Upload file lalu klik "Proses LDA".
+              Belum ada hasil. Upload file, lalu klik tombol "Proses LDA".
             </p>
           )}
 
@@ -154,9 +227,7 @@ export default function App() {
                   key={topic.topic_id}
                   className="rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-sm"
                 >
-                  <h3 className="text-base font-semibold text-slate-800">
-                    Topik #{topic.topic_id}
-                  </h3>
+                  <h3 className="text-base font-semibold text-slate-800">Topik #{topic.topic_id}</h3>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {topic.top_words?.map((word) => (
                       <span
