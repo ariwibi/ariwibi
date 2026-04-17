@@ -1,0 +1,7 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+pandas==2.3.2
+gensim==4.3.3
+numpy==2.2.6
+scipy==1.14.1
