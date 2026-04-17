@@ -1,4 +1,13 @@
 import { useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const API_BASE = "http://localhost:8000";
 
@@ -18,6 +27,20 @@ export default function App() {
   const isLoading = isUploading || isProcessing;
   const canUpload = useMemo(() => !!file && !isLoading, [file, isLoading]);
   const canProcess = useMemo(() => !!uploadId && !isLoading, [uploadId, isLoading]);
+
+  const chartData = useMemo(
+    () =>
+      topics.map((topic) => {
+        const terms = topic.top_terms || [];
+        const strength = terms.reduce((sum, term) => sum + (term.weight || 0), 0);
+        return {
+          topicLabel: `Topik ${topic.topic_id}`,
+          topicId: topic.topic_id,
+          strength: Number(strength.toFixed(4)),
+        };
+      }),
+    [topics]
+  );
 
   const resetMessages = () => {
     setError("");
@@ -206,6 +229,27 @@ export default function App() {
         )}
 
         <section className="mt-8">
+          <h2 className="text-lg font-semibold text-slate-800">Visualisasi Topik (Chart)</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Grafik menunjukkan strength topik berdasarkan total bobot top words yang dikembalikan model.
+          </p>
+
+          {chartData.length > 0 && (
+            <div className="mt-4 h-72 w-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="topicLabel" />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="strength" fill="#2563eb" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </section>
+
+        <section className="mt-8">
           <h2 className="text-lg font-semibold text-slate-800">Hasil Topik</h2>
 
           {isProcessing && (
@@ -229,12 +273,13 @@ export default function App() {
                 >
                   <h3 className="text-base font-semibold text-slate-800">Topik #{topic.topic_id}</h3>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {topic.top_words?.map((word) => (
+                    {(topic.top_terms || []).map((term) => (
                       <span
-                        key={`${topic.topic_id}-${word}`}
+                        key={`${topic.topic_id}-${term.word}`}
                         className="rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700"
+                        title={`weight: ${term.weight?.toFixed?.(4) ?? term.weight}`}
                       >
-                        {word}
+                        {term.word}
                       </span>
                     ))}
                   </div>

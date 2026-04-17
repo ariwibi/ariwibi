@@ -13,7 +13,7 @@ from gensim.models import LdaModel
 from gensim.parsing.preprocessing import STOPWORDS
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Topic Modeling API", version="2.0.0")
+app = FastAPI(title="Topic Modeling API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,9 +37,15 @@ class ProcessRequest(BaseModel):
     passes: int = Field(10, ge=1)
 
 
+class TopicTerm(BaseModel):
+    word: str
+    weight: float
+
+
 class TopicResult(BaseModel):
     topic_id: int
     top_words: List[str]
+    top_terms: List[TopicTerm]
 
 
 class TopicModelResponse(BaseModel):
@@ -152,10 +158,12 @@ async def process_lda(payload: ProcessRequest) -> TopicModelResponse:
         num_words=payload.num_words,
         formatted=False,
     ):
+        top_terms = [TopicTerm(word=word, weight=float(weight)) for word, weight in word_probs]
         topics.append(
             TopicResult(
                 topic_id=topic_id,
-                top_words=[word for word, _ in word_probs],
+                top_words=[term.word for term in top_terms],
+                top_terms=top_terms,
             )
         )
 
