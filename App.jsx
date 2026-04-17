@@ -23,12 +23,22 @@ export default function App() {
   const [numTopics, setNumTopics] = useState(5);
   const [numWords, setNumWords] = useState(10);
   const [passes, setPasses] = useState(10);
+  const [autoTopics, setAutoTopics] = useState(false);
+  const [minTopics, setMinTopics] = useState(2);
+  const [maxTopics, setMaxTopics] = useState(10);
+
+  const [autoTopicInfo, setAutoTopicInfo] = useState({
+    enabled: false,
+    best_num_topics: null,
+    best_coherence_score: null,
+    candidates: [],
+  });
 
   const isLoading = isUploading || isProcessing;
   const canUpload = useMemo(() => !!file && !isLoading, [file, isLoading]);
   const canProcess = useMemo(() => !!uploadId && !isLoading, [uploadId, isLoading]);
 
-  const chartData = useMemo(
+  const topicStrengthData = useMemo(
     () =>
       topics.map((topic) => {
         const terms = topic.top_terms || [];
@@ -42,6 +52,15 @@ export default function App() {
     [topics]
   );
 
+  const coherenceData = useMemo(
+    () =>
+      (autoTopicInfo.candidates || []).map((item) => ({
+        topicLabel: `${item.num_topics}`,
+        coherenceScore: item.coherence_score,
+      })),
+    [autoTopicInfo]
+  );
+
   const resetMessages = () => {
     setError("");
     setSuccess("");
@@ -52,6 +71,12 @@ export default function App() {
     setFile(selected);
     setUploadId("");
     setTopics([]);
+    setAutoTopicInfo({
+      enabled: false,
+      best_num_topics: null,
+      best_coherence_score: null,
+      candidates: [],
+    });
     resetMessages();
   };
 
@@ -70,6 +95,12 @@ export default function App() {
     resetMessages();
     setTopics([]);
     setUploadId("");
+    setAutoTopicInfo({
+      enabled: false,
+      best_num_topics: null,
+      best_coherence_score: null,
+      candidates: [],
+    });
     setIsUploading(true);
 
     try {
@@ -101,13 +132,29 @@ export default function App() {
       return;
     }
 
-    if (numTopics < 1 || numWords < 1 || passes < 1) {
-      setError("numTopics, numWords, dan passes harus minimal 1.");
+    if (numWords < 1 || passes < 1) {
+      setError("numWords dan passes harus minimal 1.");
+      return;
+    }
+
+    if (!autoTopics && numTopics < 1) {
+      setError("numTopics harus minimal 1.");
+      return;
+    }
+
+    if (autoTopics && (minTopics < 2 || maxTopics < 2 || maxTopics < minTopics)) {
+      setError("Untuk auto topics: minTopics/maxTopics minimal 2 dan maxTopics >= minTopics.");
       return;
     }
 
     resetMessages();
     setTopics([]);
+    setAutoTopicInfo({
+      enabled: false,
+      best_num_topics: null,
+      best_coherence_score: null,
+      candidates: [],
+    });
     setIsProcessing(true);
 
     try {
@@ -121,6 +168,9 @@ export default function App() {
           num_topics: numTopics,
           num_words: numWords,
           passes,
+          auto_topics: autoTopics,
+          min_topics: minTopics,
+          max_topics: maxTopics,
         }),
       });
 
@@ -130,7 +180,24 @@ export default function App() {
       }
 
       setTopics(data.topics || []);
-      setSuccess(`Proses LDA selesai. ${data.topics?.length || 0} topik ditemukan.`);
+      setAutoTopicInfo(
+        data.auto_topic_info || {
+          enabled: false,
+          best_num_topics: null,
+          best_coherence_score: null,
+          candidates: [],
+        }
+      );
+
+      if (data.auto_topic_info?.enabled) {
+        setSuccess(
+          `Auto topic aktif. Jumlah topik terbaik: ${data.num_topics} (coherence: ${
+            data.auto_topic_info.best_coherence_score
+          }).`
+        );
+      } else {
+        setSuccess(`Proses LDA selesai. ${data.topics?.length || 0} topik ditemukan.`);
+      }
     } catch (err) {
       setError(err.message || "Terjadi kesalahan saat proses LDA.");
     } finally {
@@ -142,9 +209,6 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 px-4 py-10">
       <div className="mx-auto w-full max-w-5xl rounded-2xl bg-white p-6 shadow-md md:p-8">
         <h1 className="text-2xl font-bold text-slate-800 md:text-3xl">LDA Topic Modeling</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          1) Upload CSV ke endpoint <code>/upload</code>, 2) proses model via endpoint <code>/process</code>.
-        </p>
 
         <div className="mt-6 rounded-xl border border-slate-200 p-4">
           <h2 className="text-lg font-semibold text-slate-800">Upload File</h2>
@@ -175,16 +239,6 @@ export default function App() {
           <h2 className="text-lg font-semibold text-slate-800">Konfigurasi & Proses LDA</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <label className="text-sm text-slate-700">
-              Jumlah Topik
-              <input
-                type="number"
-                min={1}
-                value={numTopics}
-                onChange={(e) => setNumTopics(Math.max(1, Number(e.target.value) || 1))}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="text-sm text-slate-700">
               Top Words / Topik
               <input
                 type="number"
@@ -204,7 +258,54 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
               />
             </label>
+            <label className="inline-flex items-center gap-2 pt-7 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={autoTopics}
+                onChange={(e) => setAutoTopics(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              Auto jumlah topik (coherence)
+            </label>
           </div>
+
+          {!autoTopics ? (
+            <div className="mt-4 max-w-xs">
+              <label className="text-sm text-slate-700">
+                Jumlah Topik Manual
+                <input
+                  type="number"
+                  min={1}
+                  value={numTopics}
+                  onChange={(e) => setNumTopics(Math.max(1, Number(e.target.value) || 1))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <label className="text-sm text-slate-700">
+                Minimum Topik
+                <input
+                  type="number"
+                  min={2}
+                  value={minTopics}
+                  onChange={(e) => setMinTopics(Math.max(2, Number(e.target.value) || 2))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="text-sm text-slate-700">
+                Maximum Topik
+                <input
+                  type="number"
+                  min={2}
+                  value={maxTopics}
+                  onChange={(e) => setMaxTopics(Math.max(2, Number(e.target.value) || 2))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+          )}
 
           <button
             type="button"
@@ -228,16 +329,29 @@ export default function App() {
           </div>
         )}
 
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold text-slate-800">Visualisasi Topik (Chart)</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Grafik menunjukkan strength topik berdasarkan total bobot top words yang dikembalikan model.
-          </p>
-
-          {chartData.length > 0 && (
+        {autoTopicInfo.enabled && coherenceData.length > 0 && (
+          <section className="mt-8">
+            <h2 className="text-lg font-semibold text-slate-800">Coherence Score per Jumlah Topik</h2>
             <div className="mt-4 h-72 w-full rounded-xl border border-slate-200 bg-slate-50 p-3">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <BarChart data={coherenceData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="topicLabel" />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="coherenceScore" fill="#7c3aed" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+        )}
+
+        <section className="mt-8">
+          <h2 className="text-lg font-semibold text-slate-800">Visualisasi Strength Topik</h2>
+          {topicStrengthData.length > 0 && (
+            <div className="mt-4 h-72 w-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topicStrengthData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="topicLabel" />
                   <YAxis />

@@ -9,11 +9,11 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from gensim import corpora
-from gensim.models import LdaModel
+from gensim.models import CoherenceModel, LdaModel
 from gensim.parsing.preprocessing import STOPWORDS
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Topic Modeling API", version="2.1.0")
+app = FastAPI(title="Topic Modeling API", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,11 +35,26 @@ class ProcessRequest(BaseModel):
     num_topics: int = Field(5, ge=1)
     num_words: int = Field(10, ge=1)
     passes: int = Field(10, ge=1)
+    auto_topics: bool = False
+    min_topics: int = Field(2, ge=2)
+    max_topics: int = Field(10, ge=2)
 
 
 class TopicTerm(BaseModel):
     word: str
     weight: float
+
+
+class CoherenceCandidate(BaseModel):
+    num_topics: int
+    coherence_score: float
+
+
+class AutoTopicInfo(BaseModel):
+    enabled: bool
+    best_num_topics: Optional[int] = None
+    best_coherence_score: Optional[float] = None
+    candidates: List[CoherenceCandidate] = []
 
 
 class TopicResult(BaseModel):
@@ -54,17 +69,109 @@ class TopicModelResponse(BaseModel):
     num_topics: int
     num_words: int
     passes: int
+    auto_topic_info: AutoTopicInfo
     topics: List[TopicResult]
 
 
 TOKEN_PATTERN = re.compile(r"[a-zA-Z]+")
 UPLOAD_STORE: Dict[str, List[List[str]]] = {}
 
+# Kamus slang sederhana (bisa diperluas sesuai kebutuhan)
+SLANG_DICTIONARY: Dict[str, str] = {
+    "gk": "tidak",
+    "ga": "tidak",
+    "nggak": "tidak",
+    "ngga": "tidak",
+    "tdk": "tidak",
+    "bgt": "banget",
+    "bgtt": "banget",
+    "dr": "dari",
+    "dgn": "dengan",
+    "yg": "yang",
+    "utk": "untuk",
+    "aja": "saja",
+    "sm": "sama",
+    "krn": "karena",
+    "trs": "terus",
+    "blm": "belum",
+    "udh": "sudah",
+    "sdh": "sudah",
+    "bkn": "bukan",
+    "org": "orang",
+    "dlm": "dalam",
+    "jd": "jadi",
+    "jgn": "jangan",
+    "sy": "saya",
+    "gw": "saya",
+    "gue": "saya",
+}
+
+
+def normalize_slang(token: str) -> str:
+    return SLANG_DICTIONARY.get(token, token)
+
 
 def preprocess_text(text: str) -> List[str]:
     text = str(text).lower()
     tokens = TOKEN_PATTERN.findall(text)
-    return [token for token in tokens if token not in STOPWORDS and len(token) > 2]
+    normalized_tokens = [normalize_slang(token) for token in tokens]
+    return [token for token in normalized_tokens if token not in STOPWORDS and len(token) > 2]
+
+
+def select_num_topics_by_coherence(
+    corpus: List[List[tuple]],
+    dictionary: corpora.Dictionary,
+    texts: List[List[str]],
+    min_topics: int,
+    max_topics: int,
+    passes: int,
+) -> tuple[int, List[CoherenceCandidate], float]:
+    if max_topics < min_topics:
+        raise HTTPException(status_code=400, detail="max_topics harus >= min_topics.")
+
+    if len(dictionary) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Kosakata terlalu sedikit untuk auto topic selection.",
+        )
+
+    upper_topics = min(max_topics, len(dictionary))
+    lower_topics = min(min_topics, upper_topics)
+
+    if lower_topics > upper_topics:
+        raise HTTPException(
+            status_code=400,
+            detail="Rentang topic tidak valid untuk data saat ini.",
+        )
+
+    best_topic_count = lower_topics
+    best_score = float("-inf")
+    candidates: List[CoherenceCandidate] = []
+
+    for topic_count in range(lower_topics, upper_topics + 1):
+        lda_candidate = LdaModel(
+            corpus=corpus,
+            id2word=dictionary,
+            num_topics=topic_count,
+            passes=passes,
+            random_state=42,
+        )
+        coherence_model = CoherenceModel(
+            model=lda_candidate,
+            texts=texts,
+            dictionary=dictionary,
+            coherence="c_v",
+        )
+        score = float(coherence_model.get_coherence())
+        candidates.append(
+            CoherenceCandidate(num_topics=topic_count, coherence_score=round(score, 6))
+        )
+
+        if score > best_score:
+            best_score = score
+            best_topic_count = topic_count
+
+    return best_topic_count, candidates, round(best_score, 6)
 
 
 @app.get("/")
@@ -144,17 +251,36 @@ async def process_lda(payload: ProcessRequest) -> TopicModelResponse:
             detail="Tidak ada term untuk diproses oleh LDA.",
         )
 
+    selected_num_topics = payload.num_topics
+    auto_info = AutoTopicInfo(enabled=False, candidates=[])
+
+    if payload.auto_topics:
+        selected_num_topics, candidates, best_score = select_num_topics_by_coherence(
+            corpus=corpus,
+            dictionary=dictionary,
+            texts=documents,
+            min_topics=payload.min_topics,
+            max_topics=payload.max_topics,
+            passes=payload.passes,
+        )
+        auto_info = AutoTopicInfo(
+            enabled=True,
+            best_num_topics=selected_num_topics,
+            best_coherence_score=best_score,
+            candidates=candidates,
+        )
+
     lda_model = LdaModel(
         corpus=corpus,
         id2word=dictionary,
-        num_topics=payload.num_topics,
+        num_topics=selected_num_topics,
         passes=payload.passes,
         random_state=42,
     )
 
     topics: List[TopicResult] = []
     for topic_id, word_probs in lda_model.show_topics(
-        num_topics=payload.num_topics,
+        num_topics=selected_num_topics,
         num_words=payload.num_words,
         formatted=False,
     ):
@@ -170,8 +296,9 @@ async def process_lda(payload: ProcessRequest) -> TopicModelResponse:
     return TopicModelResponse(
         upload_id=payload.upload_id,
         num_documents=len(documents),
-        num_topics=payload.num_topics,
+        num_topics=selected_num_topics,
         num_words=payload.num_words,
         passes=payload.passes,
+        auto_topic_info=auto_info,
         topics=topics,
     )
